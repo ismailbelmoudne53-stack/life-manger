@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="40" fill="#1e2235"/>
+  <rect x="16" y="16" width="160" height="160" rx="28" fill="#252a40"/>
+  <!-- Amber accent ring -->
+  <circle cx="96" cy="96" r="58" fill="none" stroke="#f59e0b" stroke-width="4" opacity="0.3"/>
+  <!-- L lettermark -->
+  <text x="52" y="130" font-family="Georgia, serif" font-weight="700" font-size="88" fill="#f59e0b" letter-spacing="-4">L</text>
+  <!-- Small dot accent -->
+  <circle cx="136" cy="64" r="8" fill="#f59e0b" opacity="0.8"/>
+</svg>
