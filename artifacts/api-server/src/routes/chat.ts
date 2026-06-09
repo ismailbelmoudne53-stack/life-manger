@@ -66,12 +66,39 @@ async function getAIResponse(
   history: Array<{ role: "user" | "assistant"; content: string }>,
   userMessage: string
 ): Promise<string> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return getOfflineResponse(userMessage);
+  }
+
+  // Claude requires strict alternating user/assistant messages
+  // Rebuild a clean alternating sequence from history
+  const cleaned: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const msg of history.slice(-20)) {
+    const last = cleaned[cleaned.length - 1];
+    if (last && last.role === msg.role) {
+      // Merge consecutive same-role messages
+      last.content += "\n" + msg.content;
+    } else {
+      cleaned.push({ role: msg.role, content: msg.content });
+    }
+  }
+
+  // Must start with a user message
+  while (cleaned.length > 0 && cleaned[0].role !== "user") {
+    cleaned.shift();
+  }
+
+  if (cleaned.length === 0) {
+    cleaned.push({ role: "user", content: userMessage });
+  }
+
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+        "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
@@ -81,12 +108,13 @@ async function getAIResponse(
 You help users with daily tasks, planning, learning new skills, language questions, reminders, and general life advice. 
 Be concise, practical, and warm. You can help organize tasks, suggest learning topics, assist with translations, or just have a supportive conversation.
 Today's date is ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}.`,
-        messages: history.slice(-10).map((m) => ({ role: m.role, content: m.content })),
+        messages: cleaned,
       }),
     });
 
     if (!response.ok) {
-      return getOfflineResponse(userMessage);
+      const errorBody = await response.text();
+      throw new Error(`Anthropic API error ${response.status}: ${errorBody}`);
     }
 
     const data = (await response.json()) as {
@@ -94,8 +122,8 @@ Today's date is ${new Date().toLocaleDateString("en-US", { weekday: "long", year
     };
     const text = data.content.find((c) => c.type === "text")?.text?.trim();
     return text ?? getOfflineResponse(userMessage);
-  } catch {
-    return getOfflineResponse(userMessage);
+  } catch (err) {
+    throw err;
   }
 }
 
