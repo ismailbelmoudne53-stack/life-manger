@@ -1,5 +1,4 @@
 import { Router, type IRouter } from "express";
-import { desc } from "drizzle-orm";
 import { db, chatMessagesTable } from "@workspace/db";
 import {
   SendChatMessageBody,
@@ -30,10 +29,9 @@ router.post("/chat", async (req, res): Promise<void> => {
     return;
   }
 
-  const [userMsg] = await db
+  await db
     .insert(chatMessagesTable)
-    .values({ role: "user", content: parsed.data.message })
-    .returning();
+    .values({ role: "user", content: parsed.data.message });
 
   const history = await db
     .select()
@@ -69,27 +67,21 @@ async function getAIResponse(
   userMessage: string
 ): Promise<string> {
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: `You are a helpful personal AI assistant integrated into LifeApp — an all-in-one life management platform. 
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 800,
+        system: `You are a helpful personal AI assistant integrated into LifeApp — an all-in-one life management platform. 
 You help users with daily tasks, planning, learning new skills, language questions, reminders, and general life advice. 
 Be concise, practical, and warm. You can help organize tasks, suggest learning topics, assist with translations, or just have a supportive conversation.
 Today's date is ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}.`,
-          },
-          ...history.slice(-10),
-          { role: "user", content: userMessage },
-        ],
-        max_tokens: 800,
-        temperature: 0.7,
+        messages: history.slice(-10).map((m) => ({ role: m.role, content: m.content })),
       }),
     });
 
@@ -98,11 +90,10 @@ Today's date is ${new Date().toLocaleDateString("en-US", { weekday: "long", year
     }
 
     const data = (await response.json()) as {
-      choices: Array<{ message: { content: string } }>;
+      content: Array<{ type: string; text: string }>;
     };
-    return (
-      data.choices[0]?.message?.content?.trim() ?? getOfflineResponse(userMessage)
-    );
+    const text = data.content.find((c) => c.type === "text")?.text?.trim();
+    return text ?? getOfflineResponse(userMessage);
   } catch {
     return getOfflineResponse(userMessage);
   }

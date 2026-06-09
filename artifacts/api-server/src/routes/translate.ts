@@ -52,20 +52,15 @@ router.post("/translate", async (req, res): Promise<void> => {
   }
 
   const { text, targetLanguage, sourceLanguage = "auto" } = parsed.data;
-
   const detectedSource = sourceLanguage === "auto" ? detectLanguage(text) : sourceLanguage;
+  const translatedText = await translateWithClaude(text, targetLanguage, detectedSource);
 
-  const translatedText = await translateWithAI(text, targetLanguage, detectedSource);
-
-  const [record] = await db
-    .insert(translationRecordsTable)
-    .values({
-      originalText: text,
-      translatedText,
-      sourceLanguage: detectedSource,
-      targetLanguage,
-    })
-    .returning();
+  await db.insert(translationRecordsTable).values({
+    originalText: text,
+    translatedText,
+    sourceLanguage: detectedSource,
+    targetLanguage,
+  });
 
   res.json(
     TranslateTextResponse.parse({
@@ -78,7 +73,6 @@ router.post("/translate", async (req, res): Promise<void> => {
 });
 
 function detectLanguage(text: string): string {
-  const lower = text.toLowerCase();
   if (/[\u4e00-\u9fff]/.test(text)) return "zh";
   if (/[\u3040-\u30ff]/.test(text)) return "ja";
   if (/[\uac00-\ud7af]/.test(text)) return "ko";
@@ -88,28 +82,23 @@ function detectLanguage(text: string): string {
   return "en";
 }
 
-async function translateWithAI(text: string, targetLang: string, sourceLang: string): Promise<string> {
+async function translateWithClaude(text: string, targetLang: string, sourceLang: string): Promise<string> {
   const targetName = LANGUAGE_NAMES[targetLang] ?? targetLang;
   const sourceName = LANGUAGE_NAMES[sourceLang] ?? sourceLang;
 
   try {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
+        "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: "gpt-4o",
-        messages: [
-          {
-            role: "system",
-            content: `You are a precise translator. Translate the text from ${sourceName} to ${targetName}. Return ONLY the translated text, no explanations or notes.`,
-          },
-          { role: "user", content: text },
-        ],
+        model: "claude-sonnet-4-20250514",
         max_tokens: 1000,
-        temperature: 0.1,
+        system: `You are a precise translator. Translate the text from ${sourceName} to ${targetName}. Return ONLY the translated text, no explanations, notes, or quotation marks.`,
+        messages: [{ role: "user", content: text }],
       }),
     });
 
@@ -117,8 +106,11 @@ async function translateWithAI(text: string, targetLang: string, sourceLang: str
       return fallbackTranslation(text, targetLang);
     }
 
-    const data = (await response.json()) as { choices: Array<{ message: { content: string } }> };
-    return data.choices[0]?.message?.content?.trim() ?? fallbackTranslation(text, targetLang);
+    const data = (await response.json()) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    const translated = data.content.find((c) => c.type === "text")?.text?.trim();
+    return translated ?? fallbackTranslation(text, targetLang);
   } catch {
     return fallbackTranslation(text, targetLang);
   }
