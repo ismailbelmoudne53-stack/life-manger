@@ -7,6 +7,9 @@ import {
   ListTranslationHistoryResponse,
 } from "@workspace/api-zod";
 
+const GROQ_BASE_URL = "https://api.groq.com/openai/v1";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+
 const router: IRouter = Router();
 
 const LANGUAGE_NAMES: Record<string, string> = {
@@ -53,7 +56,7 @@ router.post("/translate", async (req, res): Promise<void> => {
 
   const { text, targetLanguage, sourceLanguage = "auto" } = parsed.data;
   const detectedSource = sourceLanguage === "auto" ? detectLanguage(text) : sourceLanguage;
-  const translatedText = await translateWithClaude(text, targetLanguage, detectedSource);
+  const translatedText = await translateWithGroq(text, targetLanguage, detectedSource);
 
   await db.insert(translationRecordsTable).values({
     originalText: text,
@@ -82,38 +85,43 @@ function detectLanguage(text: string): string {
   return "en";
 }
 
-async function translateWithClaude(text: string, targetLang: string, sourceLang: string): Promise<string> {
+async function translateWithGroq(text: string, targetLang: string, sourceLang: string): Promise<string> {
   const targetName = LANGUAGE_NAMES[targetLang] ?? targetLang;
   const sourceName = LANGUAGE_NAMES[sourceLang] ?? sourceLang;
 
-  try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1000,
-        system: `You are a precise translator. Translate the text from ${sourceName} to ${targetName}. Return ONLY the translated text, no explanations, notes, or quotation marks.`,
-        messages: [{ role: "user", content: text }],
-      }),
-    });
-
-    if (!response.ok) {
-      return fallbackTranslation(text, targetLang);
-    }
-
-    const data = (await response.json()) as {
-      content: Array<{ type: string; text: string }>;
-    };
-    const translated = data.content.find((c) => c.type === "text")?.text?.trim();
-    return translated ?? fallbackTranslation(text, targetLang);
-  } catch {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
     return fallbackTranslation(text, targetLang);
   }
+
+  const response = await fetch(`${GROQ_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      max_tokens: 1000,
+      messages: [
+        {
+          role: "system",
+          content: `You are a precise translator. Translate the text from ${sourceName} to ${targetName}. Return ONLY the translated text, no explanations, notes, or quotation marks.`,
+        },
+        { role: "user", content: text },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${body}`);
+  }
+
+  const data = (await response.json()) as {
+    choices: Array<{ message: { content: string } }>;
+  };
+  return data.choices[0]?.message?.content?.trim() ?? fallbackTranslation(text, targetLang);
 }
 
 function fallbackTranslation(text: string, targetLang: string): string {
