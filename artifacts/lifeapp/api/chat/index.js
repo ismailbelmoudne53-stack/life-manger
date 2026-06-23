@@ -7,8 +7,8 @@ export default async function handler(req, res) {
   if (req.method === 'DELETE') return res.json({ success: true });
   if (req.method === 'POST') {
     const body = req.body;
-    const userMessage = body?.message || body?.messages?.[body.messages.length - 1]?.content || '';
-    const messages = body?.messages || [{ role: 'user', content: userMessage }];
+    const userMessage = body?.message || '';
+    const messages = [{ role: 'user', content: userMessage }];
     
     const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -23,6 +23,6 @@ export default async function handler(req, res) {
     });
     const data = await groqRes.json();
     const reply = data?.choices?.[0]?.message?.content || '';
-    return res.json({ message: reply, role: 'assistant' });
+    return res.json({ content: reply, role: 'assistant' });
   }
 }
