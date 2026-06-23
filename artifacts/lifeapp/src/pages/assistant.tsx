@@ -33,7 +33,7 @@ export function Assistant() {
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = false;
-    recognition.lang = "ar-MA";
+    recognition.lang = navigator.language || 'ar-MA';
     recognition.onstart = () => setIsListening(true);
     recognition.onresult = (e: any) => {
       const transcript = e.results[0][0].transcript;
