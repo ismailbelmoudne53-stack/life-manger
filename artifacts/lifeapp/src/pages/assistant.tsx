@@ -61,7 +61,7 @@ export function Assistant() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMessage })
+        body: JSON.stringify({ message: userMessage, history: messages.map(m => ({ role: m.role, content: m.content })) })
       });
       const data = await res.json();
       setMessages(prev => [...prev, { role: "assistant", content: data.content || data.message || "..." }]);
