@@ -40,7 +40,7 @@ export function Assistant() {
       setInput(transcript);
       setIsListening(false);
     };
-    recognition.onerror = () => setIsListening(false);
+    recognition.onerror = (e: any) => { alert("Micro error: " + e.error); setIsListening(false); };
     recognition.onend = () => setIsListening(false);
     recognitionRef.current = recognition;
     recognition.start();
