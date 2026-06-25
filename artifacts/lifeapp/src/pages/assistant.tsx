@@ -1,8 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Bot, User, Trash2, Mic } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Bot, User, Trash2, Mic, MicOff } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 
 interface Message {
@@ -10,13 +9,40 @@ interface Message {
   content: string;
 }
 
+interface UserProfile {
+  name: string;
+  title: string;
+}
+
 export function Assistant() {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [autoMode, setAutoMode] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [setupStep, setSetupStep] = useState<"name" | "title" | "done">("name");
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const autoModeRef = useRef(false);
+  const profileRef = useRef<UserProfile | null>(null);
+  const setupRef = useRef<"name" | "title" | "done">("name");
+
+  messagesRef.current = messages;
+  autoModeRef.current = autoMode;
+  profileRef.current = profile;
+  setupRef.current = setupStep;
+
+  useEffect(() => {
+    const saved = localStorage.getItem("assistant_profile");
+    if (saved) {
+      const p = JSON.parse(saved);
+      setProfile(p);
+      setSetupStep("done");
+    }
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -24,71 +50,177 @@ export function Assistant() {
     }
   }, [messages]);
 
-  const startListening = () => {
+  const speak = useCallback((text: string, onDone?: () => void) => {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => { setIsSpeaking(false); if (onDone) onDone(); };
+    utterance.onerror = () => { setIsSpeaking(false); if (onDone) onDone(); };
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  const startListening = useCallback(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("المتصفح ديالك مادعمش الميكروفون");
-      return;
-    }
+    if (!SpeechRecognition) return;
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = navigator.language || 'ar-MA';
+    recognition.interimResults = true;
+    recognition.lang = "";
     recognition.onstart = () => setIsListening(true);
     recognition.onresult = (e: any) => {
-      const transcript = e.results[0][0].transcript;
-      setInput(transcript);
-      setIsListening(false);
+      const t = Array.from(e.results).map((r: any) => r[0].transcript).join("");
+      setTranscript(t);
+      if (e.results[e.results.length - 1].isFinal) {
+        recognitionRef.current.lastTranscript = e.results[e.results.length - 1][0].transcript;
+      }
     };
-    recognition.onerror = (e: any) => { alert("Micro error: " + e.error); setIsListening(false); };
-    recognition.onend = () => setIsListening(false);
+    recognition.onend = async () => {
+      setIsListening(false);
+      const final = recognitionRef.current?.lastTranscript || "";
+      setTranscript("");
+      if (final.trim()) {
+        await handleInput(final.trim());
+      } else if (autoModeRef.current) {
+        setTimeout(() => startListening(), 500);
+      }
+    };
+    recognition.onerror = () => {
+      setIsListening(false);
+      setTranscript("");
+      if (autoModeRef.current) setTimeout(() => startListening(), 1000);
+    };
     recognitionRef.current = recognition;
+    recognitionRef.current.lastTranscript = "";
     recognition.start();
+  }, []);
+
+  const handleInput = async (text: string) => {
+    if (setupRef.current === "name") {
+      const name = text.trim();
+      setMessages(prev => [...prev, { role: "user", content: name }]);
+      const msg = `شكراً ${name}! واش أنت Mr. ولا Ms.؟`;
+      setMessages(prev => [...prev, { role: "assistant", content: msg }]);
+      setSetupStep("title");
+      speak(msg, () => { if (autoModeRef.current) setTimeout(() => startListening(), 300); });
+      recognitionRef.current = { ...recognitionRef.current, pendingName: name };
+      return;
+    }
+
+    if (setupRef.current === "title") {
+      const lower = text.toLowerCase();
+      const title = lower.includes("ms") || lower.includes("miss") || lower.includes("بنت") || lower.includes("انثى") || lower.includes("سيدة") ? "Ms." : "Mr.";
+      const pendingName = recognitionRef.current?.pendingName || "صديقي";
+      const newProfile = { name: pendingName, title };
+      setProfile(newProfile);
+      setSetupStep("done");
+      localStorage.setItem("assistant_profile", JSON.stringify(newProfile));
+      const msg = `ممتاز! أهلاً ${title} ${pendingName} 😊 أنا جاهز لمساعدتك في أي وقت. كيف يمكنني مساعدتك؟`;
+      setMessages(prev => [...prev, { role: "user", content: text }, { role: "assistant", content: msg }]);
+      speak(msg, () => { if (autoModeRef.current) setTimeout(() => startListening(), 300); });
+      return;
+    }
+
+    await sendMessage(text);
   };
 
-  const stopListening = () => {
-    recognitionRef.current?.stop();
-    setIsListening(false);
-  };
-
-  const handleSend = async () => {
-    if (!input.trim()) return;
-    const userMessage = input.trim();
-    setInput("");
-    setMessages(prev => [...prev, { role: "user", content: userMessage }]);
+  const sendMessage = async (text: string) => {
+    if (!text.trim()) return;
+    setMessages(prev => [...prev, { role: "user", content: text }]);
     setIsLoading(true);
+    const p = profileRef.current;
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userMessage, history: messages.map(m => ({ role: m.role, content: m.content })) })
+        body: JSON.stringify({
+          message: text,
+          history: messagesRef.current.map(m => ({ role: m.role, content: m.content })),
+          userTitle: p ? `${p.title} ${p.name}` : ""
+        })
       });
       const data = await res.json();
-      setMessages(prev => [...prev, { role: "assistant", content: data.content || data.message || "..." }]);
-    } catch {
-      setMessages(prev => [...prev, { role: "assistant", content: "Error. Please try again." }]);
-    } finally {
+      const reply = data.content || data.message || "...";
+      setMessages(prev => [...prev, { role: "assistant", content: reply }]);
       setIsLoading(false);
+      speak(reply, () => { if (autoModeRef.current) setTimeout(() => startListening(), 300); });
+    } catch {
+      setMessages(prev => [...prev, { role: "assistant", content: "Error." }]);
+      setIsLoading(false);
+      if (autoModeRef.current) setTimeout(() => startListening(), 1000);
+    }
+  };
+
+  const toggleAutoMode = () => {
+    if (!autoMode) {
+      setAutoMode(true);
+      autoModeRef.current = true;
+      const p = profileRef.current;
+      const greeting = p
+        ? `مرحباً ${p.title} ${p.name}! أنا جاهز، تكلم معي 🎤`
+        : "مرحباً! أنا مساعدك الشخصي. ما اسمك؟";
+      if (!p) {
+        setMessages([{ role: "assistant", content: greeting }]);
+      }
+      speak(greeting, () => startListening());
+    } else {
+      setAutoMode(false);
+      autoModeRef.current = false;
+      recognitionRef.current?.stop();
+      window.speechSynthesis.cancel();
+      setIsListening(false);
+      setIsSpeaking(false);
     }
   };
 
   return (
-    <div className="space-y-6 h-full flex flex-col">
+    <div className="space-y-4 h-full flex flex-col">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-serif font-bold">Assistant</h1>
-          <p className="text-muted-foreground">Your personal AI companion.</p>
+          <p className="text-muted-foreground">
+            {profile ? `مرحباً ${profile.title} ${profile.name} 👋` : "Your personal AI companion."}
+          </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => setMessages([])}>
-          <Trash2 className="w-4 h-4 mr-2" /> Clear Chat
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant={autoMode ? "default" : "outline"}
+            size="sm"
+            onClick={toggleAutoMode}
+            className={autoMode ? "bg-green-600 hover:bg-green-700" : ""}
+          >
+            <Mic className={`w-4 h-4 mr-2 ${autoMode ? "animate-pulse" : ""}`} />
+            {autoMode ? "جاهز 🎤" : "وضع الصوت"}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => {
+            setMessages([]);
+            window.speechSynthesis.cancel();
+            localStorage.removeItem("assistant_profile");
+            setProfile(null);
+            setSetupStep("name");
+          }}>
+            <Trash2 className="w-4 h-4" />
+          </Button>
+        </div>
       </div>
-      <ScrollArea className="flex-1 h-96" ref={scrollRef}>
+
+      {autoMode && (
+        <div className={`text-center py-2 rounded-lg text-sm font-medium ${isListening ? "bg-red-500/20 text-red-400" : isSpeaking ? "bg-blue-500/20 text-blue-400" : isLoading ? "bg-yellow-500/20 text-yellow-400" : "bg-green-500/20 text-green-400"}`}>
+          {isListening ? "🎤 كنسمعك..." : isSpeaking ? "🔊 كيتكلم..." : isLoading ? "⏳ كيفكر..." : "✅ جاهز — تكلم!"}
+        </div>
+      )}
+
+      {transcript && (
+        <div className="text-center text-sm text-muted-foreground italic">"{transcript}"</div>
+      )}
+
+      <ScrollArea className="flex-1 h-80" ref={scrollRef}>
         <div className="space-y-4 p-4">
-          {messages.length === 0 && !isLoading ? (
+          {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-center">
               <Bot className="w-12 h-12 text-primary mb-4" />
-              <p className="text-muted-foreground">I am your assistant. How can I help you today?</p>
+              <p className="text-muted-foreground">اضغط "وضع الصوت" وتكلم مباشرة 🎤</p>
             </div>
           ) : (
             messages.map((msg, i) => (
@@ -98,7 +230,10 @@ export function Assistant() {
                     <AvatarFallback><Bot className="w-4 h-4" /></AvatarFallback>
                   </Avatar>
                 )}
-                <div className={`rounded-lg px-4 py-2 max-w-xs lg:max-w-md ${msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-secondary"}`}>
+                <div
+                  className={`rounded-lg px-4 py-2 max-w-xs lg:max-w-md cursor-pointer ${msg.role === "user" ? "bg-primary text-primary-foreground" : "bg-secondary"}`}
+                  onClick={() => msg.role === "assistant" && speak(msg.content)}
+                >
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                 </div>
                 {msg.role === "user" && (
@@ -111,35 +246,12 @@ export function Assistant() {
           )}
           {isLoading && (
             <div className="flex gap-3">
-              <Avatar className="w-8 h-8">
-                <AvatarFallback><Bot className="w-4 h-4" /></AvatarFallback>
-              </Avatar>
-              <div className="bg-secondary rounded-lg px-4 py-2">
-                <p className="text-sm">...</p>
-              </div>
+              <Avatar className="w-8 h-8"><AvatarFallback><Bot className="w-4 h-4" /></AvatarFallback></Avatar>
+              <div className="bg-secondary rounded-lg px-4 py-2"><p className="text-sm">...</p></div>
             </div>
           )}
         </div>
       </ScrollArea>
-      <div className="flex gap-2">
-        <Button
-          variant={isListening ? "destructive" : "outline"}
-          size="icon"
-          onClick={isListening ? stopListening : startListening}
-        >
-          {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-        </Button>
-        <Input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === "Enter" && handleSend()}
-          placeholder={isListening ? "كنسمع..." : "Ask anything..."}
-          disabled={isLoading}
-        />
-        <Button onClick={handleSend} disabled={!input.trim() || isLoading}>
-          <Send className="w-4 h-4" />
-        </Button>
-      </div>
     </div>
   );
 }
