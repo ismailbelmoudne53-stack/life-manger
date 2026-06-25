@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Bot, User, Trash2, Mic } from "lucide-react";
+import { Bot, User, Trash2, Mic, MicOff } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 
@@ -25,6 +25,7 @@ export function Assistant() {
   const [setupStep, setSetupStep] = useState<"name" | "title" | "done">("name");
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const messagesRef = useRef<Message[]>([]);
   const autoModeRef = useRef(false);
   const profileRef = useRef<UserProfile | null>(null);
@@ -50,15 +51,37 @@ export function Assistant() {
     }
   }, [messages]);
 
-  const speak = useCallback((text: string, onDone?: () => void) => {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.rate = 1.05;
-    utterance.pitch = 1.0;
-    utterance.onstart = () => setIsSpeaking(true);
-    utterance.onend = () => { setIsSpeaking(false); if (onDone) onDone(); };
-    utterance.onerror = () => { setIsSpeaking(false); if (onDone) onDone(); };
-    window.speechSynthesis.speak(utterance);
+  const speak = useCallback(async (text: string, onDone?: () => void) => {
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      setIsSpeaking(true);
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text })
+      });
+      if (!res.ok) throw new Error("TTS failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setIsSpeaking(false);
+        URL.revokeObjectURL(url);
+        if (onDone) onDone();
+      };
+      audio.onerror = () => {
+        setIsSpeaking(false);
+        if (onDone) onDone();
+      };
+      await audio.play();
+    } catch {
+      setIsSpeaking(false);
+      if (onDone) onDone();
+    }
   }, []);
 
   const startListening = useCallback(() => {
@@ -103,11 +126,10 @@ export function Assistant() {
       const msg = `شكراً ${name}! واش أنت Mr. ولا Ms.؟`;
       setMessages(prev => [...prev, { role: "assistant", content: msg }]);
       setSetupStep("title");
-      speak(msg, () => { if (autoModeRef.current) setTimeout(() => startListening(), 300); });
       recognitionRef.current = { ...recognitionRef.current, pendingName: name };
+      speak(msg, () => { if (autoModeRef.current) setTimeout(() => startListening(), 300); });
       return;
     }
-
     if (setupRef.current === "title") {
       const lower = text.toLowerCase();
       const title = lower.includes("ms") || lower.includes("miss") || lower.includes("بنت") || lower.includes("انثى") || lower.includes("سيدة") ? "Ms." : "Mr.";
@@ -116,12 +138,11 @@ export function Assistant() {
       setProfile(newProfile);
       setSetupStep("done");
       localStorage.setItem("assistant_profile", JSON.stringify(newProfile));
-      const msg = `ممتاز! أهلاً ${title} ${pendingName} 😊 أنا جاهز لمساعدتك في أي وقت. كيف يمكنني مساعدتك؟`;
+      const msg = `ممتاز! أهلاً ${title} ${pendingName}، أنا جاهز لمساعدتك في أي وقت. كيف يمكنني مساعدتك؟`;
       setMessages(prev => [...prev, { role: "user", content: text }, { role: "assistant", content: msg }]);
       speak(msg, () => { if (autoModeRef.current) setTimeout(() => startListening(), 300); });
       return;
     }
-
     await sendMessage(text);
   };
 
@@ -158,17 +179,15 @@ export function Assistant() {
       autoModeRef.current = true;
       const p = profileRef.current;
       const greeting = p
-        ? `مرحباً ${p.title} ${p.name}! أنا جاهز، تكلم معي 🎤`
-        : "مرحباً! أنا مساعدك الشخصي. ما اسمك؟";
-      if (!p) {
-        setMessages([{ role: "assistant", content: greeting }]);
-      }
+        ? `مرحباً ${p.title} ${p.name}، أنا جاهز، تكلم معي`
+        : "مرحباً، أنا مساعدك الشخصي. ما اسمك؟";
+      if (!p) setMessages([{ role: "assistant", content: greeting }]);
       speak(greeting, () => startListening());
     } else {
       setAutoMode(false);
       autoModeRef.current = false;
       recognitionRef.current?.stop();
-      window.speechSynthesis.cancel();
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
       setIsListening(false);
       setIsSpeaking(false);
     }
@@ -180,7 +199,7 @@ export function Assistant() {
         <div>
           <h1 className="text-3xl font-serif font-bold">Assistant</h1>
           <p className="text-muted-foreground">
-            {profile ? `مرحباً ${profile.title} ${profile.name} 👋` : "Your personal AI companion."}
+            {profile ? `مرحباً ${profile.title} ${profile.name}` : "Your personal AI companion."}
           </p>
         </div>
         <div className="flex gap-2">
@@ -191,11 +210,11 @@ export function Assistant() {
             className={autoMode ? "bg-green-600 hover:bg-green-700" : ""}
           >
             <Mic className={`w-4 h-4 mr-2 ${autoMode ? "animate-pulse" : ""}`} />
-            {autoMode ? "جاهز 🎤" : "وضع الصوت"}
+            {autoMode ? "جاهز" : "وضع الصوت"}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => {
             setMessages([]);
-            window.speechSynthesis.cancel();
+            if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
             localStorage.removeItem("assistant_profile");
             setProfile(null);
             setSetupStep("name");
@@ -207,7 +226,7 @@ export function Assistant() {
 
       {autoMode && (
         <div className={`text-center py-2 rounded-lg text-sm font-medium ${isListening ? "bg-red-500/20 text-red-400" : isSpeaking ? "bg-blue-500/20 text-blue-400" : isLoading ? "bg-yellow-500/20 text-yellow-400" : "bg-green-500/20 text-green-400"}`}>
-          {isListening ? "🎤 كنسمعك..." : isSpeaking ? "🔊 كيتكلم..." : isLoading ? "⏳ كيفكر..." : "✅ جاهز — تكلم!"}
+          {isListening ? "كنسمعك..." : isSpeaking ? "كيتكلم..." : isLoading ? "كيفكر..." : "جاهز — تكلم!"}
         </div>
       )}
 
@@ -220,7 +239,7 @@ export function Assistant() {
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-64 text-center">
               <Bot className="w-12 h-12 text-primary mb-4" />
-              <p className="text-muted-foreground">اضغط "وضع الصوت" وتكلم مباشرة 🎤</p>
+              <p className="text-muted-foreground">اضغط "وضع الصوت" وتكلم مباشرة</p>
             </div>
           ) : (
             messages.map((msg, i) => (
